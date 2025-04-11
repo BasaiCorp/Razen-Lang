@@ -4,9 +4,22 @@
 
 # 0️⃣ Document Structure Variables
 # Use these variables to define the type of document you are working with
-# Available options: web, script, cli
-# Example: type web; or type script; or type cli;
-type => for declaring document structure. Use for defining document types and structure. [options: web, script, cli]
+# Available options: web, script, cli, freestyle
+# Example: type script; or type cli; or type freestyle;
+type => for declaring document structure. Use for defining document types and structure. [options: web, script, cli, freestyle]
+# web: Optimized for web development and browser-based applications
+# script: For general-purpose scripting and automation tasks
+# cli: Focused on command-line interface applications
+# freestyle: Flexible mode allowing mixed paradigms and experimental features
+
+# Note for compiler implementation:
+# - Parser should check type declaration at the start of file
+# - Lexer should adjust token recognition based on type
+# - Token patterns vary by type:
+#   - web: Includes HTML/CSS-like tokens
+#   - script: Standard programming constructs
+#   - cli: Command-line argument tokens
+#   - freestyle: Accepts all token types
 
 # 1️⃣ General Purpose Variables for basic data types:
 let => for declaring numeric variables and calculations. Use for integers, floats, and mathematical operations.

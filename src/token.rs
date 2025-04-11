@@ -242,6 +242,25 @@ impl fmt::Display for Token {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum DocumentType {
+    Web,
+    Script,
+    Cli,
+    Freestyle,
+}
+
+impl Token {
+    pub fn is_valid_for_type(&self, doc_type: &DocumentType) -> bool {
+        match doc_type {
+            DocumentType::Freestyle => true, // Freestyle accepts all tokens
+            DocumentType::Web => matches!(self.token_type, TokenType::DocumentType /* | other web tokens */),
+            DocumentType::Script => matches!(self.token_type, TokenType::DocumentType /* | other script tokens */),
+            DocumentType::Cli => matches!(self.token_type, TokenType::DocumentType /* | other cli tokens */),
+        }
+    }
+}
+
 // Helper function to lookup keywords
 pub fn lookup_identifier(identifier: &str) -> TokenType {
     match identifier {

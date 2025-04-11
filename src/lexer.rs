@@ -2,6 +2,7 @@ use std::fs;
 use std::path::Path;
 use crate::token::{Token, TokenType, lookup_identifier};
 
+#[derive(Clone)]
 pub struct Lexer {
     input: String,
     position: usize,      // current position in input (points to current char)

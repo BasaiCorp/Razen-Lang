@@ -21,6 +21,7 @@ enum IR {
     // Memory operations
     StoreVar(String),
     LoadVar(String),
+    SetGlobal(String),  // Add missing SetGlobal variant
     
     // Arithmetic operations
     Add,
@@ -1097,6 +1098,7 @@ impl Compiler {
                 IR::SetKey => code.push(0x26),
                 IR::DefineFunction(_, _) => code.push(0x27),
                 IR::Label(_) => code.push(0x28),
+                IR::SetGlobal(_) => code.push(0x2B),  // Add SetGlobal instruction
             }
         }
         
@@ -1143,6 +1145,40 @@ impl Compiler {
                 IR::PushNumber(n) => stack.push(n.to_string()),
                 IR::PushString(s) => stack.push(s.clone()),
                 IR::PushBoolean(b) => stack.push(b.to_string()),
+                IR::PushNull => stack.push("null".to_string()),
+                IR::Pop => {
+                    if let Some(_) = stack.pop() {
+                        // Do nothing
+                    }
+                },
+                IR::Dup => {
+                    if let Some(value) = stack.last().cloned() {
+                        stack.push(value);
+                    }
+                },
+                IR::Swap => {
+                    if let (Some(b), Some(a)) = (stack.pop(), stack.pop()) {
+                        stack.push(b);
+                        stack.push(a);
+                    }
+                },
+                IR::StoreVar(name) => {
+                    if let Some(value) = stack.pop() {
+                        variables.insert(name.clone(), value);
+                    }
+                },
+                IR::LoadVar(name) => {
+                    if let Some(value) = variables.get(name) {
+                        stack.push(value.clone());
+                    } else {
+                        stack.push("undefined".to_string());
+                    }
+                },
+                IR::SetGlobal(name) => {
+                    if let Some(value) = stack.pop() {
+                        variables.insert(name.clone(), value);
+                    }
+                },
                 IR::Add => {
                     if let (Some(b), Some(a)) = (stack.pop(), stack.pop()) {
                         // Try to add as numbers first
@@ -1191,55 +1227,6 @@ impl Compiler {
                         // Compare as strings
                         let result = a != b;
                         stack.push(result.to_string());
-                    }
-                },
-                IR::StoreVar(name) => {
-                    if let Some(value) = stack.pop() {
-                        variables.insert(name.clone(), value);
-                    }
-                },
-                IR::LoadVar(name) => {
-                    if let Some(value) = variables.get(name) {
-                        stack.push(value.clone());
-                    } else {
-                        stack.push("undefined".to_string());
-                    }
-                },
-                IR::Print => {
-                    if let Some(value) = stack.pop() {
-                        println!("{}", value);
-                    }
-                },
-                IR::ReadInput => {
-                    use std::io::{self, BufRead};
-                    let stdin = io::stdin();
-                    let mut line = String::new();
-                    stdin.lock().read_line(&mut line).expect("Failed to read line");
-                    // Remove trailing newline
-                    if line.ends_with('\n') {
-                        line.pop();
-                        if line.ends_with('\r') {
-                            line.pop();
-                        }
-                    }
-                    stack.push(line);
-                },
-                IR::Exit => {
-                    if !self.clean_output {
-                        println!("Program terminated with exit statement");
-                    }
-                    return Ok(());
-                },
-                IR::Jump(target) => {
-                    pc = *target;
-                    continue;
-                },
-                IR::JumpIfFalse(target) => {
-                    if let Some(value) = stack.pop() {
-                        if value == "false" || value == "0" || value.is_empty() || value == "False" {
-                            pc = *target;
-                            continue;
-                        }
                     }
                 },
                 IR::GreaterThan => {
@@ -1294,6 +1281,14 @@ impl Compiler {
                     if let (Some(b), Some(a)) = (stack.pop(), stack.pop()) {
                         stack.push(b);
                         stack.push(a);
+                    }
+                },
+                IR::JumpIfFalse(target) => {
+                    if let Some(value) = stack.pop() {
+                        if value == "false" || value == "0" || value.is_empty() || value == "False" {
+                            pc = *target;
+                            continue;
+                        }
                     }
                 },
                 IR::JumpIfTrue(target) => {

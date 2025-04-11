@@ -2,8 +2,48 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::ast::{Program, Statement, Expression};
-use crate::token::{Token, TokenType};
+use crate::token::{Token, TokenType, DocumentType};
 use crate::lexer::Lexer;
+
+// Define parse error types
+#[derive(Debug, Clone, PartialEq)]
+pub enum ParseError {
+    ExpectedDocumentType,
+    InvalidDocumentType,
+    InvalidTokenForType,
+    UnknownVariable(String, Vec<String>), // Variable name and suggestions
+    InvalidSyntax(String),
+    ExpectedToken(TokenType, TokenType),  // Expected, Got
+    // Add other error types as needed
+}
+
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            ParseError::ExpectedDocumentType => write!(f, "Expected document type declaration (web, script, cli, freestyle)"),
+            ParseError::InvalidDocumentType => write!(f, "Invalid document type. Valid types are: web, script, cli, freestyle"),
+            ParseError::InvalidTokenForType => write!(f, "Token not allowed for this document type"),
+            ParseError::UnknownVariable(var, suggestions) => {
+                write!(f, "Unknown variable: '{}'", var)?;
+                if !suggestions.is_empty() {
+                    write!(f, ". Did you mean: ")?;
+                    for (i, suggestion) in suggestions.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "'{}'", suggestion)?;
+                    }
+                    write!(f, "?")?;
+                }
+                Ok(())
+            },
+            ParseError::InvalidSyntax(msg) => write!(f, "Invalid syntax: {}", msg),
+            ParseError::ExpectedToken(expected, got) => {
+                write!(f, "Expected token '{}', got '{}'", expected, got)
+            },
+        }
+    }
+}
 
 // Define operator precedence levels
 #[derive(PartialEq, PartialOrd, Debug)]
@@ -30,6 +70,9 @@ pub struct Parser {
     // Maps for prefix and infix parsing functions
     prefix_parse_fns: HashMap<TokenType, fn(&mut Parser) -> Option<Expression>>,
     infix_parse_fns: HashMap<TokenType, fn(&mut Parser, Expression) -> Option<Expression>>,
+    variables: HashMap<String, Expression>,
+    known_variables: HashMap<String, String>, // Variable name -> description
+    document_type: Option<DocumentType>,
 }
 
 impl Parser {
@@ -44,7 +87,13 @@ impl Parser {
             errors: Vec::new(),
             prefix_parse_fns: HashMap::new(),
             infix_parse_fns: HashMap::new(),
+            variables: HashMap::new(),
+            known_variables: HashMap::new(),
+            document_type: None,
         };
+        
+        // Load known variables from the language definition
+        parser.load_known_variables();
         
         // Register prefix parse functions
         parser.register_prefix(TokenType::Identifier, Parser::parse_identifier);
@@ -187,28 +236,79 @@ impl Parser {
     fn parse_variable_declaration(&mut self) -> Option<Statement> {
         let var_type = self.current_token.literal.clone();
         
+        // Check if the variable type is valid
+        let valid_var_types = ["let", "take", "hold", "put"];
+        if !valid_var_types.contains(&var_type.as_str()) {
+            let mut suggestions = Vec::new();
+            for vt in valid_var_types.iter() {
+                if let Some(desc) = self.known_variables.get(*vt) {
+                    suggestions.push(format!("{} ({})", vt, desc));
+                } else {
+                    suggestions.push((*vt).to_string());
+                }
+            }
+            self.errors.push(format!("Invalid variable type: '{}'. Valid types are: {}", 
+                var_type, suggestions.join(", ")));
+            return None;
+        }
+        
         if !self.expect_peek(TokenType::Identifier) {
+            self.errors.push("Expected variable name after variable type".to_string());
             return None;
         }
         
         let name = self.current_token.literal.clone();
         
         if !self.expect_peek(TokenType::Assign) {
+            self.errors.push(format!("Expected '=' after variable name '{}'", name));
             return None;
         }
         
         self.next_token();
         
-        let value = self.parse_expression(Precedence::Lowest)?;
+        let value = self.parse_expression(Precedence::Lowest);
+        
+        // Check if the value type matches the variable type
+        if let Some(ref expr) = value {
+            match var_type.as_str() {
+                "let" => {
+                    if !self.is_number_expression(expr) {
+                        self.errors.push(format!(
+                            "Type mismatch: 'let' expects a number value for variable '{}'. Use 'take' for strings, 'hold' for booleans, or 'put' for any type.", 
+                            name
+                        ));
+                    }
+                },
+                "take" => {
+                    if !self.is_string_expression(expr) {
+                        self.errors.push(format!(
+                            "Type mismatch: 'take' expects a string value for variable '{}'. Use 'let' for numbers, 'hold' for booleans, or 'put' for any type.", 
+                            name
+                        ));
+                    }
+                },
+                "hold" => {
+                    if !self.is_boolean_expression(expr) {
+                        self.errors.push(format!(
+                            "Type mismatch: 'hold' expects a boolean value for variable '{}'. Use 'let' for numbers, 'take' for strings, or 'put' for any type.", 
+                            name
+                        ));
+                    }
+                },
+                _ => {} // 'put' accepts any type
+            }
+        }
         
         if self.peek_token_is(TokenType::Semicolon) {
             self.next_token();
         }
         
+        self.variables.insert(name.clone(), value.clone().unwrap_or(Expression::Identifier("undefined".to_string())));
+        
         Some(Statement::VariableDeclaration {
             var_type,
             name,
-            value: Some(value),
+            value,
         })
     }
     
@@ -732,7 +832,15 @@ impl Parser {
     }
     
     fn parse_identifier(&mut self) -> Option<Expression> {
-        Some(Expression::Identifier(self.current_token.literal.clone()))
+        let name = self.current_token.literal.clone();
+        
+        if let Some(expr) = self.variables.get(&name) {
+            Some(expr.clone())
+        } else {
+            let suggestions = self.suggest_variables(&name);
+            self.errors.push(ParseError::UnknownVariable(name, suggestions).to_string());
+            None
+        }
     }
     
     fn parse_string_literal(&mut self) -> Option<Expression> {
@@ -924,6 +1032,261 @@ impl Parser {
             TokenType::LeftBracket => Precedence::Index,
             _ => Precedence::Lowest,
         }
+    }
+
+    fn suggest_variables(&self, name: &str) -> Vec<String> {
+        let mut suggestions = Vec::new();
+        let name_lower = name.to_lowercase();
+        
+        // Helper function to calculate Levenshtein distance between two strings
+        fn levenshtein_distance(a: &str, b: &str) -> usize {
+            let a_len = a.chars().count();
+            let b_len = b.chars().count();
+            
+            // Create a matrix of size (a_len+1) x (b_len+1)
+            let mut matrix = vec![vec![0; b_len + 1]; a_len + 1];
+            
+            // Initialize the first row and column
+            for i in 0..=a_len {
+                matrix[i][0] = i;
+            }
+            for j in 0..=b_len {
+                matrix[0][j] = j;
+            }
+            
+            // Fill the matrix
+            let a_chars: Vec<char> = a.chars().collect();
+            let b_chars: Vec<char> = b.chars().collect();
+            
+            for i in 1..=a_len {
+                for j in 1..=b_len {
+                    let cost = if a_chars[i-1] == b_chars[j-1] { 0 } else { 1 };
+                    
+                    matrix[i][j] = std::cmp::min(
+                        matrix[i-1][j] + 1,                 // deletion
+                        std::cmp::min(
+                            matrix[i][j-1] + 1,             // insertion
+                            matrix[i-1][j-1] + cost         // substitution
+                        )
+                    );
+                }
+            }
+            
+            matrix[a_len][b_len]
+        }
+        
+        // Collect all variables with their Levenshtein distance
+        let mut candidates = Vec::new();
+        
+        // Check variables in current scope
+        for var in self.variables.keys() {
+            let var_lower = var.to_lowercase();
+            let distance = levenshtein_distance(&name_lower, &var_lower);
+            
+            // Only suggest if the distance is reasonable (max 3 edits or contains the name)
+            if distance <= 3 || var_lower.contains(&name_lower) {
+                candidates.push((var.clone(), distance));
+            }
+        }
+        
+        // Check known variables from language definition
+        for var in self.known_variables.keys() {
+            let var_lower = var.to_lowercase();
+            let distance = levenshtein_distance(&name_lower, &var_lower);
+            
+            // Only suggest if the distance is reasonable (max 3 edits or contains the name)
+            if distance <= 3 || var_lower.contains(&name_lower) {
+                candidates.push((var.clone(), distance));
+            }
+        }
+        
+        // Sort by distance (closest first)
+        candidates.sort_by_key(|(_, distance)| *distance);
+        
+        // Take top 3 suggestions
+        for (var, _) in candidates.iter().take(3) {
+            // Include description if available
+            if let Some(desc) = self.known_variables.get(var) {
+                suggestions.push(format!("{} ({})", var, desc));
+            } else {
+                suggestions.push(var.clone());
+            }
+        }
+        
+        suggestions
+    }
+
+    fn load_known_variables(&mut self) {
+        // Try to load variables from the variables.rzn file
+        let variables_path = Path::new("properties/variables.rzn");
+        let syntax_path = Path::new("properties/syntax.rzn");
+        
+        // Load from variables.rzn
+        if let Ok(content) = std::fs::read_to_string(variables_path) {
+            for line in content.lines() {
+                // Skip comments and empty lines
+                if line.trim().starts_with('#') || line.trim().is_empty() {
+                    continue;
+                }
+                
+                // Parse lines in format: "variable => description"
+                if let Some(idx) = line.find("=>") {
+                    let var_name = line[..idx].trim().to_string();
+                    let description = line[idx+2..].trim().to_string();
+                    if !var_name.is_empty() {
+                        self.known_variables.insert(var_name, description);
+                    }
+                }
+            }
+        }
+        
+        // Load from syntax.rzn
+        if let Ok(content) = std::fs::read_to_string(syntax_path) {
+            for line in content.lines() {
+                // Skip comments and empty lines
+                if line.trim().starts_with('#') || line.trim().is_empty() {
+                    continue;
+                }
+                
+                // Parse VAR: lines in format: "VAR: variable => description"
+                if line.trim().starts_with("VAR:") {
+                    let line = line.trim()[4..].trim();
+                    if let Some(idx) = line.find("=>") {
+                        let var_name = line[..idx].trim().to_string();
+                        let description = line[idx+2..].trim().to_string();
+                        if !var_name.is_empty() {
+                            self.known_variables.insert(var_name, description);
+                        }
+                    }
+                }
+                
+                // Parse FUNC: lines in format: "FUNC: function(params) => description"
+                if line.trim().starts_with("FUNC:") {
+                    let line = line.trim()[5..].trim();
+                    if let Some(idx) = line.find("=>") {
+                        let func_decl = line[..idx].trim();
+                        if let Some(paren_idx) = func_decl.find('(') {
+                            let func_name = func_decl[..paren_idx].trim().to_string();
+                            let description = line[idx+2..].trim().to_string();
+                            if !func_name.is_empty() {
+                                self.known_variables.insert(func_name, description);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // If no variables were loaded, add some defaults
+        if self.known_variables.is_empty() {
+            self.known_variables.insert("let".to_string(), "For declaring numeric variables".to_string());
+            self.known_variables.insert("take".to_string(), "For declaring string variables".to_string());
+            self.known_variables.insert("hold".to_string(), "For declaring boolean variables".to_string());
+            self.known_variables.insert("put".to_string(), "For declaring variables of any type".to_string());
+            self.known_variables.insert("type".to_string(), "For declaring document structure".to_string());
+        }
+    }
+
+    fn is_boolean_expression(&self, expr: &Expression) -> bool {
+        match expr {
+            Expression::BooleanLiteral(_) => true,
+            Expression::Identifier(name) => {
+                // Check if the identifier refers to a boolean variable
+                if let Some(Expression::BooleanLiteral(_)) = self.variables.get(name) {
+                    true
+                } else {
+                    false
+                }
+            },
+            Expression::InfixExpression { left, operator, right } => {
+                match operator.as_str() {
+                    "==" | "!=" | ">" | ">=" | "<" | "<=" | "&&" | "||" => true,
+                    _ => false,
+                }
+            },
+            Expression::PrefixExpression { operator, .. } => {
+                operator == "!"
+            },
+            _ => false,
+        }
+    }
+    
+    fn is_number_expression(&self, expr: &Expression) -> bool {
+        match expr {
+            Expression::NumberLiteral(_) => true,
+            Expression::Identifier(name) => {
+                // Check if the identifier refers to a number variable
+                if let Some(Expression::NumberLiteral(_)) = self.variables.get(name) {
+                    true
+                } else {
+                    false
+                }
+            },
+            Expression::InfixExpression { left, operator, right } => {
+                match operator.as_str() {
+                    "+" | "-" | "*" | "/" | "%" | "**" | "//" => {
+                        self.is_number_expression(left) && self.is_number_expression(right)
+                    },
+                    _ => false,
+                }
+            },
+            Expression::PrefixExpression { operator, right } => {
+                if operator == "-" {
+                    self.is_number_expression(right)
+                } else {
+                    false
+                }
+            },
+            _ => false,
+        }
+    }
+    
+    fn is_string_expression(&self, expr: &Expression) -> bool {
+        match expr {
+            Expression::StringLiteral(_) => true,
+            Expression::Identifier(name) => {
+                // Check if the identifier refers to a string variable
+                if let Some(Expression::StringLiteral(_)) = self.variables.get(name) {
+                    true
+                } else {
+                    false
+                }
+            },
+            Expression::InfixExpression { left, operator, right } => {
+                if operator == "+" {
+                    self.is_string_expression(left) || self.is_string_expression(right)
+                } else {
+                    false
+                }
+            },
+            _ => false,
+        }
+    }
+
+    pub fn parse_document_type(&mut self) -> Result<DocumentType, ParseError> {
+        match &self.current_token {
+            Token { token_type: TokenType::Identifier, literal, .. } => match literal.as_str() {
+                "web" => Ok(DocumentType::Web),
+                "script" => Ok(DocumentType::Script),
+                "cli" => Ok(DocumentType::Cli),
+                "freestyle" => Ok(DocumentType::Freestyle),
+                _ => Err(ParseError::InvalidDocumentType),
+            },
+            _ => Err(ParseError::ExpectedDocumentType),
+        }
+    }
+
+    pub fn validate_tokens(&self, doc_type: &DocumentType) -> Result<(), ParseError> {
+        // Create a clone of the lexer to tokenize all without affecting the parser state
+        let mut lexer_clone = self.lexer.clone();
+        let tokens = lexer_clone.tokenize_all();
+        
+        for token in tokens {
+            if !token.is_valid_for_type(doc_type) {
+                return Err(ParseError::InvalidTokenForType);
+            }
+        }
+        Ok(())
     }
 }
 

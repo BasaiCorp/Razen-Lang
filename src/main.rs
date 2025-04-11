@@ -68,13 +68,15 @@ fn main() {
                     match compiler.write_to_file(output_path) {
                         Ok(_) => println!("Compilation successful!"),
                         Err(e) => {
-                            println!("Error writing output file: {}", e);
+                            println!("\n🔴 Compiler Error: {}", e);
+                            println!("\n💡 Tip: Check for type mismatches or undefined variables in your code.");
                             process::exit(1);
                         }
                     }
                 },
                 Err(e) => {
-                    println!("Compilation error: {}", e);
+                    println!("\n🔴 Compilation Error: {}", e);
+                    println!("\n💡 Tip: Check the syntax and variable names in your code. Make sure you're using the correct keywords and variable types.");
                     process::exit(1);
                 }
             }
@@ -100,17 +102,19 @@ fn main() {
                     match compiler.execute() {
                         Ok(_) => {
                             if !clean_output {
-                                println!("Execution completed successfully!");
+                                println!("\n✅ Program executed successfully");
                             }
                         },
                         Err(e) => {
-                            println!("Execution error: {}", e);
+                            println!("\n🔴 Runtime Error: {}", e);
+                            println!("\n💡 Tip: Check for logical errors or invalid operations in your code.");
                             process::exit(1);
                         }
                     }
                 },
                 Err(e) => {
-                    println!("Compilation error: {}", e);
+                    println!("\n🔴 Compilation Error: {}", e);
+                    println!("\n💡 Tip: Check the syntax and variable names in your code. Make sure you're using the correct keywords and variable types.");
                     process::exit(1);
                 }
             }
@@ -227,7 +231,7 @@ fn run_test_file(file_path: &Path, debug_mode: bool) -> (bool, f64) {
                     if !debug_mode {
                         println!("PASS ({:.2}s)", duration);
                     } else {
-                        println!("\nPASS ({:.2}s)", duration);
+                        println!("\n✅ PASS ({:.2}s)", duration);
                     }
                     (true, duration)
                 },
@@ -236,7 +240,8 @@ fn run_test_file(file_path: &Path, debug_mode: bool) -> (bool, f64) {
                     if !debug_mode {
                         println!("FAIL ({:.2}s)", duration);
                     } else {
-                        println!("\nFAIL ({:.2}s): {}", duration, e);
+                        println!("\n🔴 FAIL ({:.2}s): {}", duration, e);
+                        println!("\n💡 Tip: Check for logical errors or invalid operations in your code.");
                     }
                     (false, duration)
                 }
@@ -247,7 +252,8 @@ fn run_test_file(file_path: &Path, debug_mode: bool) -> (bool, f64) {
             if !debug_mode {
                 println!("FAIL ({:.2}s)", duration);
             } else {
-                println!("\nFAIL ({:.2}s): {}", duration, e);
+                println!("\n🔴 FAIL ({:.2}s): {}", duration, e);
+                println!("\n💡 Tip: Check the syntax and variable names in your code. Make sure you're using the correct keywords and variable types.");
             }
             (false, duration)
         }
